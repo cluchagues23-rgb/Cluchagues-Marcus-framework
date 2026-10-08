@@ -2,7 +2,7 @@
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23242641.svg)](https://doi.org/10.5281/zenodo.23242641)
 
-Code accompanying the manuscript *"Modulating Local Microenvironmental Dielectric Permittivity via Biogenic Sub-Nanometer Vectors to Optimize Drug-Target Kinetic Fitting: The Cluchagues-Marcus Framework"* (submitted to *In Silico Pharmacology*).
+Code accompanying the manuscript *"Modulating Local Microenvironmental Dielectric Permittivity via Biogenic Sub-Nanometer Vectors to Optimize Drug-Target Kinetic Fitting: The Cluchagues-Marcus Framework"*.
 
 The script couples non-adiabatic Marcus kinetics with a modified Hill-type dose–response equation, simulates synthetic data, fits them by trust-region-reflective least squares, and assesses parameter identifiability from the Jacobian singular values.
 
