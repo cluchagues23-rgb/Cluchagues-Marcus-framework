@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+title: "Cluchagues-Marcus framework (in silico validation)"
+version: "V1.0.0"
+date-released: "2026-10-08"
+doi: "10.5281/zenodo.23242641"
+license: MIT
+repository-code: "https://github.com/cluchagues23-rgb/Cluchagues-Marcus-framework"
+abstract: "Python code for the in silico Cluchagues-Marcus framework: non-adiabatic Marcus kinetics coupled to a modified Hill-type dose-response equation, synthetic data, trust-region-reflective fitting and Jacobian-based identifiability analysis. All data are synthetic."
+keywords:
+  - in silico pharmacology
+  - Marcus theory
+  - parameter identifiability
+  - dose-response modelling
+authors:
+  - family-names: "Cluchagues Abam"
+    given-names: "L. M."
+    affiliation: "University of Douala, Cameroon"
+  - family-names: "Mfabo Kameni"
+    given-names: "I. H."
+    affiliation: "University of Douala, Cameroon"
+  - family-names: "Eya'ane Meva"
+    given-names: "F."
+    affiliation: "University of Douala, Cameroon"
