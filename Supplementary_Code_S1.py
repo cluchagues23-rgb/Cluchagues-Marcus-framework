@@ -310,6 +310,141 @@ for name, c in CASES.items():
     def fit_case(cfg, Y):
         free = CFG[cfg]["free"]
         def f(x, *q):
-            p = TRUEc.copy(); p[fr
+            p = TRUEc.copy(); p[free] = q
+            return hill(x, p[0], p[1], 10 ** p[2], p[3], 10 ** p[4], 10 ** p[5])
+        popt, pcov, info, *_ = curve_fit(f, X, Y, p0=P0c[free], bounds=(LO[free], HI[free]), method="trf", x_scale="jac", full_output=True, maxfev=400)
+        res = Y - f(X, *popt)
+        J = np.empty((X.size, len(free)))
+        for j in range(len(free)):
+            h = 1e-6 * max(1.0, abs(popt[j])); a = popt.copy(); b = popt.copy(); a[j] += h; b[j] -= h
+            J[:, j] = (f(X, *a) - f(X, *b)) / (2 * h)
+        sv = np.linalg.svd(J, compute_uv=False)
+        return dict(r2=1 - np.sum(res ** 2) / np.sum((Y - Y.mean()) ** 2), nfev=int(info["nfev"]), null=len(free) - numerical_rank(sv), popt=popt)
+    agg = {k: dict(r2=[], nfev=[], null=[]) for k in CFG}; koffs = []
+    for s in range(NSEEDS):
+        Yc = hill(X, TOP, BOT, c["Kd"], N_HILL, kcs_c, KOFF) + np.random.default_rng(s).normal(0, SIGMA, NPTS)
+        for k in CFG:
+            r = fit_case(k, Yc); agg[k]["r2"].append(r["r2"]); agg[k]["nfev"].append(r["nfev"]); agg[k]["null"].append(r["null"])
+            if k == "nu_kd": koffs.append(r["popt"][3])
+    case_out[name] = dict(R_nm=c["R"], Kd_M=c["Kd"], G_eV=float(Gc), lam_unshielded=float(lu), lam_shielded=float(ls),
+        lam_reduction_pct=float(100 * (1 - ls / lu)), kC_unshielded=float(kcu_c), kC_shielded=float(kcs_c), kC_ratio=float(kcs_c / kcu_c),
+        EC50_unshielded_M=float(ec_u), EC50_shielded_M=float(ec_s), EC50_fold=float(ec_u / ec_s),
+        P1_threshold_eV=float(np.sqrt(lu * ls)),
+        identifiability={k: dict(null_dim_median=float(np.median(v["null"])), r2_median=float(np.median(v["r2"])), nfev_median=float(np.median(v["nfev"]))) for k, v in agg.items()},
+        koff_log10_mean=float(np.mean(koffs)), koff_log10_sd=float(np.std(koffs, ddof=1)))
+res_all = json.load(open("results.json")); res_all["case_studies"] = case_out
+json.dump(res_all, open("results.json", "w"), indent=1)
+print(json.dumps(case_out, indent=1))
+
+
+# =====================================================================
+# Real data demonstration (Section 3.6, Figure 3, Table 5)
+# Input: dose-data_napabucasin.csv  (napabucasin cell-viability curves, 8 concentrations, ~700 cancer cell lines;
+# format of the DepMap/PRISM portal download - cite the exact source and version).  Skipped if the file is absent.
+# Response = 1 - viability (inhibition fraction).  Fits: four-parameter logistic (4PL) and Eq. 3 with anchors.
+# =====================================================================
+import os
+import pandas as pd
+RD = "dose-data_napabucasin.csv"
+if os.path.exists(RD):
+    df = pd.read_csv(RD, encoding="utf-8-sig")
+    dcols = [c for c in df.columns if c.strip().endswith(" uM")]
+    conc = np.array([float(c.split()[0]) for c in dcols]) * 1e-6           # M
+    def f4(x, top, bot, lec, n):
+        return bot + (top - bot) / (1 + (10 ** lec / x) ** n)
+    ANCH = [3e-7, 1e-6, 3e-6, 1e-5]                                          # assumed K_d anchors (M), all > typical EC50
+    rows = []
+    for _, r in df.iterrows():
+        v = pd.to_numeric(r[dcols], errors="coerce").values.astype(float)
+        if np.sum(np.isfinite(v)) < 7: continue
+        m = np.isfinite(v); xs = conc[m]; ys = 1 - v[m]
+        try:
+            p4, _ = curve_fit(f4, xs, ys, p0=[1, 0, -7, 1], bounds=([0.3, -0.5, -9.5, 0.2], [1.5, 0.6, -4, 5]), maxfev=2000)
+        except Exception:
+            continue
+        res4 = ys - f4(xs, *p4); sse4 = float(np.sum(res4 ** 2)); sst = float(np.sum((ys - ys.mean()) ** 2))
+        rec = dict(cell=r["cellLine"], ec50_fit_uM=10 ** p4[2] * 1e6, ec50_data_uM=float(r["ec50"]), r2=1 - sse4 / sst, sse4=sse4, n=p4[3], top=p4[0], bot=p4[1], npts=int(m.sum()))
+        # anchored fits of Eq. 3 (k_C fixed, K_d fixed): free = Top, Bottom, n, log10 koff
+        for kd in ANCH:
+            rr = (10 ** p4[2] / kd) ** p4[3]
+            if rr >= 0.999: continue
+            ko0 = np.log10(KC_S * rr / (1 - rr))
+            g = lambda x, top, bot, nn, lko: hill(x, top, bot, kd, nn, KC_S, 10 ** lko)
+            try:
+                pa, _ = curve_fit(g, xs, ys, p0=[p4[0], p4[1], p4[3], ko0], bounds=([0.3, -0.5, 0.2, 3], [1.5, 0.6, 5, 16]), maxfev=5000)
+                ssea = float(np.sum((ys - g(xs, *pa)) ** 2))
+                rec[f"sse_ratio_{kd:g}"] = ssea / sse4; rec[f"log10koff_{kd:g}"] = pa[3]
+            except Exception:
+                pass
+        # Jacobian null dimension of the full model at a parameter vector matching the 4PL optimum (K_d = 1 uM, k_C = KC_S)
+        rr = (10 ** p4[2] / 1e-6) ** p4[3]
+        if rr < 0.999:
+            p6 = np.array([p4[0], p4[1], -6.0, p4[3], np.log10(KC_S), np.log10(KC_S * rr / (1 - rr))])
+            def nr(free):
+                J = np.empty((xs.size, len(free)))
+                for j, i in enumerate(free):
+                    h = 1e-6; a = p6.copy(); b = p6.copy(); a[i] += h; b[i] -= h
+                    J[:, j] = (hill(xs, a[0], a[1], 10 ** a[2], a[3], 10 ** a[4], 10 ** a[5]) - hill(xs, b[0], b[1], 10 ** b[2], b[3], 10 ** b[4], 10 ** b[5])) / (2 * h)
+                sv = np.linalg.svd(J, compute_uv=False); return len(free) - int(np.sum(sv > 1e-6 * sv[0]))
+            rec["null_free"] = nr([0, 1, 2, 3, 4, 5]); rec["null_nu"] = nr([0, 1, 2, 3, 5]); rec["null_nu_kd"] = nr([0, 1, 3, 5])
+        rows.append(rec)
+    R = pd.DataFrame(rows)
+    ok = R[R["r2"].notna()]
+    lg = np.log10(ok["ec50_fit_uM"] / ok["ec50_data_uM"].clip(lower=1e-6))
+    real = dict(n_cell_lines=int(len(ok)), concentrations_uM=[float(c * 1e6) for c in conc],
+                r2_median=float(ok["r2"].median()), r2_q25=float(ok["r2"].quantile(.25)), r2_q75=float(ok["r2"].quantile(.75)),
+                ec50_fit_median_uM=float(ok["ec50_fit_uM"].median()),
+                ec50_agreement_median_abs_log10=float(np.median(np.abs(lg))), ec50_spearman=float(spearmanr(ok["ec50_fit_uM"], ok["ec50_data_uM"])[0]),
+                null_dim_free_unique=sorted(set(int(x) for x in R["null_free"].dropna())), null_dim_nu_unique=sorted(set(int(x) for x in R["null_nu"].dropna())),
+                null_dim_nu_kd_unique=sorted(set(int(x) for x in R["null_nu_kd"].dropna())))
+    for kd in ANCH:
+        c = f"sse_ratio_{kd:g}"
+        if c in R:
+            real[f"anchor_{kd:g}M"] = dict(n=int(R[c].notna().sum()), sse_ratio_median=float(R[c].median()), sse_ratio_p95=float(R[c].quantile(.95)),
+                                          log10koff_median=float(R[f"log10koff_{kd:g}"].median()))
+    res_all = json.load(open("results.json")); res_all["real_data_napabucasin"] = real
+    json.dump(res_all, open("results.json", "w"), indent=1)
+    print(json.dumps(real, indent=1))
+    # ---- Figure 3
+    fig3 = plt.figure(figsize=(6.5, 5.6)); g3 = fig3.add_gridspec(2, 2, hspace=0.6, wspace=0.55)
+    cA, cB, cC = fig3.add_subplot(g3[0, :]), fig3.add_subplot(g3[1, 0]), fig3.add_subplot(g3[1, 1])
+    srt = ok.sort_values("ec50_fit_uM"); picks = [srt.iloc[int(len(srt) * q)] for q in (0.05, 0.5, 0.95)]
+    xx3 = np.logspace(np.log10(conc.min() / 2), np.log10(conc.max() * 2), 300)
+    for pk, col, mk in zip(picks, [C_S, C_K, C_U], ["o", "s", "^"]):
+        rw = df[df["cellLine"] == pk["cell"]].iloc[0]; v = pd.to_numeric(rw[dcols], errors="coerce").values.astype(float); m = np.isfinite(v)
+        cA.semilogx(conc[m] * 1e6, 1 - v[m], mk, color=col, ms=4.5, mfc="none" if mk != "s" else col, label=pk["cell"])
+        cA.semilogx(xx3 * 1e6, f4(xx3, pk["top"], pk["bot"], np.log10(pk["ec50_fit_uM"] * 1e-6), pk["n"]), "-", color=col, lw=1.2)
+    cA.set_xlabel("Napabucasin (µM)"); cA.set_ylabel("Inhibition (1 − viability)"); cA.legend(frameon=False, loc="upper left", fontsize=7)
+    cB.loglog(ok["ec50_data_uM"].clip(lower=1e-4), ok["ec50_fit_uM"], "o", ms=2.5, color=C_S, alpha=.5, mec="none")
+    lims = [1e-3, 20]; cB.plot(lims, lims, "k--", lw=.8); cB.set_xlim(lims); cB.set_ylim(lims)
+    cB.set_xlabel("EC$_{50}$ in data set (µM)"); cB.set_ylabel("EC$_{50}$ from 4PL fit (µM)")
+    kds = [k for k in ANCH if f"anchor_{k:g}M" in real]
+    cC.axhline(0, color="k", lw=.8, ls=":")
+    pos = np.arange(len(kds)); cC.plot(pos, [100 * (real[f"anchor_{k:g}M"]["sse_ratio_median"] - 1) for k in kds], "s-", color=C_S, ms=5, lw=1.2)
+    cC.set_xticks(pos); cC.set_xticklabels(["%g µM" % (k * 1e6) for k in kds]); cC.set_xlabel(r"Anchored $K_{\mathrm{d}}$")
+    cC.set_ylabel("Median SSE change vs 4PL (%)", color=C_S); cC.set_ylim(-1, 1); cC.set_xlim(-0.3, len(kds) - 0.7)
+    cC.text(0.30, 0.20, "SSE unchanged\n(< 10$^{-7}$ %)", transform=cC.transAxes, ha="center", fontsize=7, color=C_S)
+    cC2 = cC.twinx(); cC2.spines["right"].set_visible(True)
+    cC2.plot(pos, [real[f"anchor_{k:g}M"]["log10koff_median"] for k in kds], "o-", color=C_U, ms=5); cC2.set_ylabel(r"Median log$_{10}$ $k_{\mathrm{off,q}}$ (s$^{-1}$)", color=C_U)
+    for a_, lab, dx in [(cA, "A", -.08), (cB, "B", -.3), (cC, "C", -.3)]: a_.text(dx, 1.06, lab, transform=a_.transAxes, fontsize=11, fontweight="bold")
+    fig3.savefig("Figure3.png", bbox_inches="tight", facecolor="white"); fig3.savefig("Figure3.pdf", bbox_inches="tight", facecolor="white")
+    try:
+        fig3.savefig("Figure3.tiff", dpi=600, bbox_inches="tight", facecolor="white", pil_kwargs={"compression": "tiff_lzw"})
+    except Exception as _e:
+        print("TIFF not saved:", _e)
+else:
+    print("Real-data file not found; real-data section skipped.")
+
+
+# ---------------- show the figures when run inside a notebook (Colab / Jupyter) ----------------
+try:
+    from IPython.display import Image as _Img, display as _disp
+    for _f in ("Figure1.png", "Figure2.png", "Figure3.png"):
+        if os.path.exists(_f):
+            print(_f); _disp(_Img(filename=_f))
+except Exception:
+    pass
+print("Done. Output files: Figure1-3 (.png/.pdf/.tiff), results.json, sensitivity.json (see the Files panel on the left in Colab).")
+
  
 
